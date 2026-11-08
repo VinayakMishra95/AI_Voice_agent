@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mermaid Voice Agent</title>
+  <style>
+    :root { --bg: #07131c; --panel: #0d2130; --border: #1b3b52; --text: #e8f4f8; --muted: #8fb3c9; --accent: #4dd0e1; --accent2: #80cbc4; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: radial-gradient(circle at top, #0f2c3f 0%, var(--bg) 65%); color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 24px; }
+    .app { width: 100%; max-width: 700px; display: flex; flex-direction: column; gap: 18px; }
+    header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+    h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
+    .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    select, button.secondary, label.toggle { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 0.9rem; cursor: pointer; }
+    label.toggle { display: inline-flex; align-items: center; gap: 6px; }
+    .orb-card { background: rgba(13, 33, 48, 0.85); border: 1px solid var(--border); border-radius: 20px; padding: 28px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+    #talkBtn { width: 132px; height: 132px; border-radius: 999px; border: 2px solid var(--accent); background: radial-gradient(circle at 35% 30%, #26a69a, #0b3c49); color: #fff; font-size: 1rem; font-weight: 600; cursor: pointer; box-shadow: 0 0 28px rgba(77, 208, 225, 0.28); }
+    #talkBtn.active { border-color: var(--accent2); box-shadow: 0 0 42px rgba(77, 208, 225, 0.65); }
+    .status { font-size: 0.95rem; color: var(--muted); min-height: 1.3em; }
+    .meter-wrap { width: 220px; height: 6px; background: #081824; border-radius: 999px; overflow: hidden; }
+    .meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.06s linear; }
+    .chat { background: rgba(13, 33, 48, 0.75); border: 1px solid var(--border); border-radius: 16px; padding: 16px; min-height: 260px; max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; line-height: 1.45; font-size: 0.95rem; }
+    .msg.user { align-self: flex-end; background: #173f59; }
+    .msg.bot { align-self: flex-start; background: #0f2c3a; border: 1px solid #1f4f63; }
+    .msg .who { font-size: 0.75rem; color: var(--muted); margin-bottom: 3px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Mermaid Voice Agent</h1>
+      <div class="controls">
+        <select id="voiceSelect"></select>
+        <label class="toggle"><input type="checkbox" id="etherealToggle" checked /> Ethereal</label>
+        <button class="secondary" id="resetBtn">Clear</button>
+      </div>
+    </header>
+    <div class="orb-card">
+      <button id="talkBtn">Start Talking</button>
+      <div class="meter-wrap"><div class="meter-fill" id="meterFill"></div></div>
+      <div class="status" id="statusText">Click "Start Talking" and allow microphone access.</div>
+    </div>
+    <div class="chat" id="chatLog"></div>
+  </div>
+  <script>
+    const talkBtn = document.getElementById("talkBtn");
+    const statusText = document.getElementById("statusText");
+    const meterFill = document.getElementById("meterFill");
+    const chatLog = document.getElementById("chatLog");
+    const voiceSelect = document.getElementById("voiceSelect");
+    const etherealToggle = document.getElementById("etherealToggle");
+    const resetBtn = document.getElementById("resetBtn");
+
+    let running = false, busy = false, audioCtx = null, mediaStream = null, processor = null;
+    let chunks = [], speaking = false, silenceStart = 0, speechStart = 0;
+    let noiseSamples = [], calibratingUntil = 0, speechThreshold = 0.025;
+    const SILENCE_MS = 900, MIN_SPEECH_MS = 280, MAX_SPEECH_MS = 8500;
+
+    fetch("/api/voices").then(r => r.json()).then(data => {
+      for (const [id, desc] of Object.entries(data.voices)) {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = `${id} — ${desc.split("(")[0].trim()}`;
+        voiceSelect.appendChild(opt);
+      }
+      voiceSelect.value = data.default || "af_heart";
+    });
+
+    function appendMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      div.innerHTML = `<div class="who">${role === "user" ? "You" : "Mermaid"}</div><div></div>`;
+      div.lastChild.textContent = text;
+      chatLog.appendChild(div);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    function encodeWav(samples, sampleRate) {
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+      const w = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+      w(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); w(8, "WAVE"); w(12, "fmt ");
+      view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, "data");
+      view.setUint32(40, samples.length * 2, true);
+      for (let i = 0, off = 44; i < samples.length; i++, off += 2) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return new Blob([view], { type: "audio/wav" });
+    }
+
+    async function sendAudio(wavBlob) {
+      busy = true; speaking = false; chunks = []; meterFill.style.width = "0%";
+      statusText.textContent = "Thinking & speaking...";
+      try {
+        const res = await fetch(`/api/talk?voice=${encodeURIComponent(voiceSelect.value)}&ethereal=${etherealToggle.checked ? 1 : 0}`, {
+          method: "POST", headers: { "Content-Type": "audio/wav" }, body: await wavBlob.arrayBuffer()
+        });
+        const data = await res.json();
+        if (data.user_text) appendMessage("user", data.user_text);
+        if (data.reply_text) appendMessage("bot", data.reply_text);
+      } catch (err) {
+        statusText.textContent = "Error talking to local server.";
+      } finally {
+        busy = false;
+        if (running) statusText.textContent = "Listening... just speak naturally.";
+      }
+    }
+
+    async function startListening() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      noiseSamples = [];
+      calibratingUntil = performance.now() + 600;
+      processor.onaudioprocess = (e) => {
+        if (!running || busy) return;
+        const input = e.inputBuffer.getChannelData(0);
+        let sum = 0;
+        for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+        const rms = Math.sqrt(sum / input.length);
+        meterFill.style.width = `${Math.min(100, rms * 1400)}%`;
+        const now = performance.now();
+        if (now < calibratingUntil) {
+          noiseSamples.push(rms);
+          return;
+        }
+        if (noiseSamples.length > 0) {
+          noiseSamples.sort((a, b) => a - b);
+          const floor = noiseSamples[Math.floor(noiseSamples.length / 2)] || 0.005;
+          speechThreshold = Math.max(0.02, Math.min(0.08, floor * 3.2 + 0.008));
+          noiseSamples = [];
+          statusText.textContent = "Listening... just speak naturally.";
+        }
+        if (rms >= speechThreshold) {
+          if (!speaking) { speaking = true; speechStart = now; chunks = []; statusText.textContent = "Hearing you..."; }
+          silenceStart = 0; chunks.push(new Float32Array(input));
+          if (now - speechStart >= MAX_SPEECH_MS) {
+            const total = chunks.reduce((a, b) => a + b.length, 0);
+            const merged = new Float32Array(total);
+            let off = 0;
+            for (const c of chunks) { merged.set(c, off); off += c.length; }
+            sendAudio(encodeWav(merged, audioCtx.sampleRate));
+          }
+        } else if (speaking) {
+          chunks.push(new Float32Array(input));
+          if (!silenceStart) silenceStart = now;
+          if (now - silenceStart >= SILENCE_MS) {
+            if (now - speechStart >= MIN_SPEECH_MS) {
+              const total = chunks.reduce((a, b) => a + b.length, 0);
+              const merged = new Float32Array(total);
+              let off = 0;
+              for (const c of chunks) { merged.set(c, off); off += c.length; }
+              sendAudio(encodeWav(merged, audioCtx.sampleRate));
+            } else {
+              speaking = false; chunks = []; statusText.textContent = "Listening... just speak naturally.";
+            }
+          }
+        }
+      };
+      source.connect(processor); processor.connect(audioCtx.destination);
+      running = true; talkBtn.textContent = "Stop"; talkBtn.classList.add("active");
+      statusText.textContent = "Calibrating mic...";
+    }
+
+    function stopListening() {
+      running = false; speaking = false; busy = false; chunks = [];
+      if (processor) { processor.disconnect(); processor = null; }
+      if (audioCtx) { audioCtx.close(); audioCtx = null; }
+      if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+      talkBtn.textContent = "Start Talking"; talkBtn.classList.remove("active", "speaking");
+      meterFill.style.width = "0%"; statusText.textContent = "Paused. Click \"Start Talking\" to resume.";
+    }
+
+    talkBtn.addEventListener("click", () => {
+      if (running) stopListening();
+      else startListening().catch(() => { statusText.textContent = "Microphone permission is required."; });
+    });
+    resetBtn.addEventListener("click", async () => { await fetch("/api/reset", { method: "POST" }); chatLog.innerHTML = ""; });
+  </script>
+</body>
+</html>
