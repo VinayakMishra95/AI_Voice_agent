@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+outputs/
+models/
+.git/
+Start Mermaid.command
+mermaid_tts.py
+mermaid_agent.py
+mermaid_web.py

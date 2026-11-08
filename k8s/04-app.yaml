@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mermaid-voice-agent
+  namespace: mermaid
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mermaid-voice-agent
+  template:
+    metadata:
+      labels:
+        app: mermaid-voice-agent
+    spec:
+      containers:
+        - name: mermaid-voice-agent
+          image: mermaid-voice-agent:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: mermaid-config
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "1536Mi"
+            limits:
+              cpu: "4000m"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 18
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: mermaid-models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mermaid-voice-agent
+  namespace: mermaid
+spec:
+  type: NodePort
+  selector:
+    app: mermaid-voice-agent
+  ports:
+    - port: 80
+      targetPort: 8000
+      nodePort: 30080

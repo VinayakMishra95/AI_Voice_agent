@@ -17,6 +17,7 @@
     .orb-card { background: rgba(13, 33, 48, 0.85); border: 1px solid var(--border); border-radius: 20px; padding: 28px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
     #talkBtn { width: 132px; height: 132px; border-radius: 999px; border: 2px solid var(--accent); background: radial-gradient(circle at 35% 30%, #26a69a, #0b3c49); color: #fff; font-size: 1rem; font-weight: 600; cursor: pointer; box-shadow: 0 0 28px rgba(77, 208, 225, 0.28); }
     #talkBtn.active { border-color: var(--accent2); box-shadow: 0 0 42px rgba(77, 208, 225, 0.65); }
+    #talkBtn.speaking { background: radial-gradient(circle at 35% 30%, #4dd0e1, #0f4c5c); }
     .status { font-size: 0.95rem; color: var(--muted); min-height: 1.3em; }
     .meter-wrap { width: 220px; height: 6px; background: #081824; border-radius: 999px; overflow: hidden; }
     .meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.06s linear; }
@@ -53,8 +54,9 @@
     const etherealToggle = document.getElementById("etherealToggle");
     const resetBtn = document.getElementById("resetBtn");
 
+    const sessionId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
     let running = false, busy = false, audioCtx = null, mediaStream = null, processor = null;
-    let chunks = [], speaking = false, silenceStart = 0, speechStart = 0;
+    let chunks = [], speaking = false, silenceStart = 0, speechStart = 0, currentPlayer = null;
     let noiseSamples = [], calibratingUntil = 0, speechThreshold = 0.025;
     const SILENCE_MS = 900, MIN_SPEECH_MS = 280, MAX_SPEECH_MS = 8500;
 
@@ -93,21 +95,61 @@
       return new Blob([view], { type: "audio/wav" });
     }
 
+    async function playBrowserAudio(b64) {
+      const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
+      if (audioCtx && audioCtx.state === "suspended") await audioCtx.resume();
+      if (audioCtx) {
+        try {
+          const decoded = await audioCtx.decodeAudioData(raw);
+          await new Promise(resolve => {
+            const src = audioCtx.createBufferSource();
+            src.buffer = decoded;
+            src.connect(audioCtx.destination);
+            currentPlayer = { pause: () => { try { src.stop(); } catch (_) {} } };
+            src.onended = () => { currentPlayer = null; resolve(); };
+            src.start(0);
+          });
+          return;
+        } catch (_) {}
+      }
+      await new Promise(resolve => {
+        const a = new Audio(`data:audio/wav;base64,${b64}`);
+        currentPlayer = a;
+        a.onended = a.onerror = () => { currentPlayer = null; resolve(); };
+        a.play().catch(() => resolve());
+      });
+    }
+
     async function sendAudio(wavBlob) {
       busy = true; speaking = false; chunks = []; meterFill.style.width = "0%";
-      statusText.textContent = "Thinking & speaking...";
+      statusText.textContent = "Thinking...";
+      let hadError = false;
       try {
         const res = await fetch(`/api/talk?voice=${encodeURIComponent(voiceSelect.value)}&ethereal=${etherealToggle.checked ? 1 : 0}`, {
-          method: "POST", headers: { "Content-Type": "audio/wav" }, body: await wavBlob.arrayBuffer()
+          method: "POST",
+          headers: { "Content-Type": "audio/wav", "X-Session-Id": sessionId },
+          body: await wavBlob.arrayBuffer()
         });
         const data = await res.json();
+        if (!res.ok) {
+          hadError = true;
+          statusText.textContent = `Server error (${res.status}): ${data.detail || "LLM not ready"}`;
+          return;
+        }
         if (data.user_text) appendMessage("user", data.user_text);
         if (data.reply_text) appendMessage("bot", data.reply_text);
+        if (data.audio_b64) {
+          statusText.textContent = "Mermaid is speaking...";
+          talkBtn.classList.add("speaking");
+          await playBrowserAudio(data.audio_b64);
+          talkBtn.classList.remove("speaking");
+        }
       } catch (err) {
-        statusText.textContent = "Error talking to local server.";
+        hadError = true;
+        statusText.textContent = "Error talking to server.";
       } finally {
         busy = false;
-        if (running) statusText.textContent = "Listening... just speak naturally.";
+        if (running && !hadError) statusText.textContent = "Listening... just speak naturally.";
       }
     }
 
@@ -127,10 +169,7 @@
         const rms = Math.sqrt(sum / input.length);
         meterFill.style.width = `${Math.min(100, rms * 1400)}%`;
         const now = performance.now();
-        if (now < calibratingUntil) {
-          noiseSamples.push(rms);
-          return;
-        }
+        if (now < calibratingUntil) { noiseSamples.push(rms); return; }
         if (noiseSamples.length > 0) {
           noiseSamples.sort((a, b) => a - b);
           const floor = noiseSamples[Math.floor(noiseSamples.length / 2)] || 0.005;
@@ -171,6 +210,7 @@
 
     function stopListening() {
       running = false; speaking = false; busy = false; chunks = [];
+      if (currentPlayer) { currentPlayer.pause(); currentPlayer = null; }
       if (processor) { processor.disconnect(); processor = null; }
       if (audioCtx) { audioCtx.close(); audioCtx = null; }
       if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
@@ -182,7 +222,10 @@
       if (running) stopListening();
       else startListening().catch(() => { statusText.textContent = "Microphone permission is required."; });
     });
-    resetBtn.addEventListener("click", async () => { await fetch("/api/reset", { method: "POST" }); chatLog.innerHTML = ""; });
+    resetBtn.addEventListener("click", async () => {
+      await fetch("/api/reset", { method: "POST", headers: { "X-Session-Id": sessionId } });
+      chatLog.innerHTML = "";
+    });
   </script>
 </body>
 </html>
