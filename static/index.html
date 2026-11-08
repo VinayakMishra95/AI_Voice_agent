@@ -31,11 +31,11 @@
 <body>
   <div class="app">
     <header>
-      <h1>Mermaid Voice Agent</h1>
+      <h1 id="appTitle">Mermaid Voice Agent</h1>
       <div class="controls">
         <select id="voiceSelect"></select>
         <label class="toggle"><input type="checkbox" id="etherealToggle" checked /> Ethereal</label>
-        <button class="secondary" id="resetBtn">Clear</button>
+        <button class="secondary" id="resetBtn" title="Clears the screen while keeping long-term memory">New Chat</button>
       </div>
     </header>
     <div class="orb-card">
@@ -53,14 +53,26 @@
     const voiceSelect = document.getElementById("voiceSelect");
     const etherealToggle = document.getElementById("etherealToggle");
     const resetBtn = document.getElementById("resetBtn");
+    const appTitle = document.getElementById("appTitle");
 
-    const sessionId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
+    let agentName = "Mermaid";
+    let sessionId = localStorage.getItem("mermaid_session_id");
+    if (!sessionId) {
+      sessionId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
+      localStorage.setItem("mermaid_session_id", sessionId);
+    }
+
     let running = false, busy = false, audioCtx = null, mediaStream = null, processor = null;
     let chunks = [], speaking = false, silenceStart = 0, speechStart = 0, currentPlayer = null;
     let noiseSamples = [], calibratingUntil = 0, speechThreshold = 0.025;
     const SILENCE_MS = 900, MIN_SPEECH_MS = 280, MAX_SPEECH_MS = 8500;
 
     fetch("/api/voices").then(r => r.json()).then(data => {
+      if (data.agent_name) {
+        agentName = data.agent_name;
+        appTitle.textContent = `${agentName} Voice Agent`;
+        document.title = `${agentName} Voice Agent`;
+      }
       for (const [id, desc] of Object.entries(data.voices)) {
         const opt = document.createElement("option");
         opt.value = id;
@@ -70,10 +82,18 @@
       voiceSelect.value = data.default || "af_heart";
     });
 
+    fetch("/api/history", { headers: { "X-Session-Id": sessionId } })
+      .then(r => r.ok ? r.json() : { history: [] })
+      .then(data => {
+        for (const msg of (data.history || [])) {
+          appendMessage(msg.role === "user" ? "user" : "bot", msg.content);
+        }
+      }).catch(() => {});
+
     function appendMessage(role, text) {
       const div = document.createElement("div");
       div.className = `msg ${role}`;
-      div.innerHTML = `<div class="who">${role === "user" ? "You" : "Mermaid"}</div><div></div>`;
+      div.innerHTML = `<div class="who">${role === "user" ? "You" : agentName}</div><div></div>`;
       div.lastChild.textContent = text;
       chatLog.appendChild(div);
       chatLog.scrollTop = chatLog.scrollHeight;
@@ -139,7 +159,7 @@
         if (data.user_text) appendMessage("user", data.user_text);
         if (data.reply_text) appendMessage("bot", data.reply_text);
         if (data.audio_b64) {
-          statusText.textContent = "Mermaid is speaking...";
+          statusText.textContent = `${agentName} is speaking...`;
           talkBtn.classList.add("speaking");
           await playBrowserAudio(data.audio_b64);
           talkBtn.classList.remove("speaking");

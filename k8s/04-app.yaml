@@ -4,7 +4,12 @@ metadata:
   name: mermaid-voice-agent
   namespace: mermaid
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: mermaid-voice-agent
@@ -15,7 +20,7 @@ spec:
     spec:
       containers:
         - name: mermaid-voice-agent
-          image: mermaid-voice-agent:1.0.0
+          image: mermaid-voice-agent:1.0.1
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -24,11 +29,11 @@ spec:
                 name: mermaid-config
           resources:
             requests:
-              cpu: "1000m"
-              memory: "1536Mi"
+              cpu: "250m"
+              memory: "512Mi"
             limits:
-              cpu: "4000m"
-              memory: "4Gi"
+              cpu: "2000m"
+              memory: "2560Mi"
           livenessProbe:
             httpGet:
               path: /healthz
@@ -49,6 +54,17 @@ spec:
         - name: model-cache
           persistentVolumeClaim:
             claimName: mermaid-models-pvc
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mermaid-voice-agent-pdb
+  namespace: mermaid
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mermaid-voice-agent
 ---
 apiVersion: v1
 kind: Service

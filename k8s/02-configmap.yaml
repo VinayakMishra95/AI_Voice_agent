@@ -4,10 +4,12 @@ metadata:
   name: mermaid-config
   namespace: mermaid
 data:
+  AGENT_NAME: "Mermaid"
   MODEL_CACHE_DIR: "/models"
   STT_MODEL: "small.en"
   STT_COMPUTE_TYPE: "int8"
   STT_DEVICE: "cpu"
   LLM_BASE_URL: "http://ollama.mermaid.svc.cluster.local:11434/v1"
   LLM_MODEL: "qwen2.5:1.5b"
+  REDIS_URL: "redis://redis.mermaid.svc.cluster.local:6379/0"
   LOG_LEVEL: "INFO"
